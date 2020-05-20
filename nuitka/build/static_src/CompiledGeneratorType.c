@@ -748,6 +748,45 @@ static PyObject *_Nuitka_Generator_throw2(struct Nuitka_GeneratorObject *generat
     PRINT_NEW_LINE();
 #endif
 
+    // TODO: Make this a function shared with coroutines and asyncgen. The
+    // code is duplicated there too.
+    if (PyExceptionClass_Check(exception_type)) {
+        NORMALIZE_EXCEPTION(&exception_type, &exception_value, &exception_tb);
+    } else if (PyExceptionInstance_Check(exception_type)) {
+        if (exception_value != NULL && exception_value != Py_None) {
+            // Release exception, we are done with it now.
+            Py_DECREF(exception_type);
+            Py_XDECREF(exception_value);
+            Py_XDECREF(exception_tb);
+
+            SET_CURRENT_EXCEPTION_TYPE0_STR(PyExc_TypeError, "instance exception may not have a separate value");
+            return NULL;
+        }
+
+        // Release old None value and replace it with the object, then set the exception type
+        // from the class.
+        Py_XDECREF(exception_value);
+        exception_value = exception_type;
+
+        exception_type = PyExceptionInstance_Class(exception_type);
+        Py_INCREF(exception_type);
+    } else {
+        // Release exception, we are done with it now.
+        Py_DECREF(exception_type);
+        Py_XDECREF(exception_value);
+        Py_XDECREF(exception_tb);
+
+#if PYTHON_VERSION < 300
+        PyErr_Format(PyExc_TypeError, "exceptions must be classes, or instances, not %s",
+                     Py_TYPE(exception_type)->tp_name);
+#else
+        PyErr_Format(PyExc_TypeError, "exceptions must be classes or instances deriving from BaseException, not %s",
+                     Py_TYPE(exception_type)->tp_name);
+#endif
+
+        return NULL;
+    }
+
     if (generator->m_status == status_Running) {
         // Passing exception ownership to Nuitka_Generator_send2
         PyObject *result = Nuitka_Generator_send2(generator, NULL, exception_type, exception_value, exception_tb);
@@ -793,51 +832,10 @@ static PyObject *Nuitka_Generator_throw(struct Nuitka_GeneratorObject *generator
         return NULL;
     }
 
-    // Check traceback limitations.
-    if (exception_tb == (PyTracebackObject *)Py_None) {
-        exception_tb = NULL;
-    } else if (exception_tb != NULL && !PyTraceBack_Check(exception_tb)) {
-        SET_CURRENT_EXCEPTION_TYPE0_STR(PyExc_TypeError, "throw() third argument must be a traceback object");
-
-        return NULL;
-    }
-
-    if (PyExceptionClass_Check(exception_type)) {
-        Py_INCREF(exception_type);
-        Py_XINCREF(exception_value);
-        Py_XINCREF(exception_tb);
-
-#if PYTHON_VERSION >= 300
-        // During a "yield from", the normalize is not done.
-        if (generator->m_yieldfrom == NULL) {
-#endif
-            NORMALIZE_EXCEPTION(&exception_type, &exception_value, &exception_tb);
-#if PYTHON_VERSION >= 300
-        }
-#endif
-    } else if (PyExceptionInstance_Check(exception_type)) {
-        if (exception_value != NULL && exception_value != Py_None) {
-            SET_CURRENT_EXCEPTION_TYPE0_STR(PyExc_TypeError, "instance exception may not have a separate value");
-            return NULL;
-        }
-
-        exception_value = exception_type;
-        exception_type = PyExceptionInstance_Class(exception_type);
-
-        Py_INCREF(exception_type);
-        Py_INCREF(exception_value);
-        Py_XINCREF(exception_tb);
-    } else {
-        PyErr_Format(PyExc_TypeError,
-#if PYTHON_VERSION < 300
-                     "exceptions must be classes, or instances, not %s",
-#else
-                     "exceptions must be classes or instances deriving from BaseException, not %s",
-#endif
-                     Py_TYPE(exception_type)->tp_name);
-
-        return NULL;
-    }
+    // Handing ownership of exception over, we need not release it ourselves
+    Py_INCREF(exception_type);
+    Py_XINCREF(exception_value);
+    Py_XINCREF(exception_tb);
 
     return _Nuitka_Generator_throw2(generator, exception_type, exception_value, exception_tb);
 }
